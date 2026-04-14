@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 
 const StoreContext = createContext();
 
-const BASE_URL = "http://localhost:3001";
+const BASE_URL = "https://grocify-backend-597n.onrender.com";
 
 export const StoreProvider = ({ children }) => {
   const [products, setProducts] = useState([]);
