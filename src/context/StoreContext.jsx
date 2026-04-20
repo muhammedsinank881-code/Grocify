@@ -144,7 +144,7 @@ export const StoreProvider = ({ children }) => {
 
     const num = parseFloat(v);
     const product = products.find(p => p.id === id);
-    
+
     if (!isNaN(num) && num > product.stock) return;
 
     setCart(prev =>
@@ -284,7 +284,7 @@ export const StoreProvider = ({ children }) => {
     await fetchData();
   };
 
-  // ✅ FIXED: Separate createPurchaseReturn function (moved outside)
+  // ---------------- PURCHASE RETURN ----------------
   const createPurchaseReturn = async (transaction, returnItems) => {
     let refundAmount = 0;
 
@@ -308,6 +308,34 @@ export const StoreProvider = ({ children }) => {
       body: JSON.stringify(newReturn)
     });
 
+    // Update returnedQty on the original purchase transaction
+    const updatedItems = transaction.items.map(originalItem => {
+      const returnedItem = returnItems.find(r => r.id === originalItem.id);
+      if (returnedItem) {
+        return {
+          ...originalItem,
+          returnedQty: Math.min(
+            originalItem.quantity,
+            (originalItem.returnedQty || 0) + returnedItem.quantity
+          )
+        };
+      }
+      return originalItem;
+    });
+
+    await fetch(`${BASE_URL}/transactions/${transaction.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: updatedItems })
+    });
+
+    // ✅ FIX: Update local transactions state immediately so useEffect in Returns.jsx fires
+    setTransactions(prev =>
+      prev.map(t =>
+        t.id === transaction.id ? { ...t, items: updatedItems } : t
+      )
+    );
+
     // 📦 DECREASE stock for purchase returns (items going back to supplier)
     for (let item of returnItems) {
       const product = products.find(p => p.id === item.id);
@@ -316,9 +344,7 @@ export const StoreProvider = ({ children }) => {
       await fetch(`${BASE_URL}/products/${item.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          stock: newStock
-        })
+        body: JSON.stringify({ stock: newStock })
       });
 
       setProducts(prev =>
@@ -328,11 +354,11 @@ export const StoreProvider = ({ children }) => {
       );
     }
 
-    // 💰 Adjust supplier balance (we get money back, so balance decreases)
+    // 💰 Adjust supplier balance (we get money back, so balance increases toward zero)
     const supplier = parties.find(p => p.id === transaction.partyId);
-    
+
     if (supplier) {
-      const newBalance = supplier.balance + refundAmount; // Adding because we're returning goods
+      const newBalance = supplier.balance + refundAmount;
 
       await fetch(`${BASE_URL}/parties/${supplier.id}`, {
         method: "PATCH",
@@ -364,7 +390,7 @@ export const StoreProvider = ({ children }) => {
 
     // Update local returns state
     setReturns(prev => [...prev, newReturn]);
-    
+
     // Refresh all data
     await fetchData();
   };
@@ -388,7 +414,7 @@ export const StoreProvider = ({ children }) => {
         name: item.name,
         price,
         quantity: item.quantity,
-        costPrice: item.costPrice // Include cost price for profit calculation
+        costPrice: item.costPrice
       };
     });
 
@@ -451,17 +477,14 @@ export const StoreProvider = ({ children }) => {
     return saved;
   };
 
-  // ✅ FIXED: Enhanced createReturn with profit calculation
+  // ---------------- SALES RETURN ----------------
   const createReturn = async (transaction, returnItems) => {
-    // Calculate refund amount using selling price
     let refundAmount = 0;
     let profitLoss = 0;
 
     returnItems.forEach(item => {
       refundAmount += item.price * item.quantity;
-      
-      // Calculate profit/loss impact
-      // For each returned item, we lose the profit that was made
+
       const originalItem = transaction.items.find(i => i.id === item.id);
       if (originalItem && originalItem.costPrice) {
         const profitPerItem = originalItem.price - originalItem.costPrice;
@@ -476,7 +499,7 @@ export const StoreProvider = ({ children }) => {
       date: new Date().toISOString(),
       items: returnItems,
       refundAmount,
-      profitLoss: -profitLoss // Negative profit impact
+      profitLoss: -profitLoss
     };
 
     // Save return
@@ -488,6 +511,37 @@ export const StoreProvider = ({ children }) => {
 
     const savedReturn = await res.json();
     setReturns(prev => [...prev, savedReturn]);
+
+    // Update original bill with returned qty
+    const updatedItems = transaction.items.map(originalItem => {
+      const returnedItem = returnItems.find(r => r.id === originalItem.id);
+
+      if (returnedItem) {
+        return {
+          ...originalItem,
+          returnedQty: Math.min(
+            originalItem.quantity,
+            (originalItem.returnedQty || 0) + returnedItem.quantity
+          )
+        };
+      }
+
+      return originalItem;
+    });
+
+    // PATCH original transaction
+    await fetch(`${BASE_URL}/transactions/${transaction.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: updatedItems })
+    });
+
+    // ✅ FIX: Update local transactions state immediately so useEffect in Returns.jsx fires
+    setTransactions(prev =>
+      prev.map(t =>
+        t.id === transaction.id ? { ...t, items: updatedItems } : t
+      )
+    );
 
     // Handle credit refund if original payment was credit
     if (transaction.paymentMethod === "credit" && transaction.partyId) {
@@ -544,7 +598,7 @@ export const StoreProvider = ({ children }) => {
 
     // Refresh all data to ensure consistency
     await fetchData();
-    
+
     return savedReturn;
   };
 
@@ -620,7 +674,7 @@ export const StoreProvider = ({ children }) => {
         addToCart,
         removeFromCart,
         clearCart,
-        handleQtyInput, 
+        handleQtyInput,
 
         // Discount function
         getDiscountedPrice,
@@ -639,7 +693,7 @@ export const StoreProvider = ({ children }) => {
         createBill,
         createPurchase,
         createReturn,
-        createPurchaseReturn, // ✅ Now exported properly
+        createPurchaseReturn,
         createPayment,
 
         // Utility functions
