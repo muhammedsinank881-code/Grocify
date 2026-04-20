@@ -376,6 +376,7 @@ export const StoreProvider = ({ children }) => {
     // Add transaction log for purchase return (negative total)
     const returnTransaction = {
       type: "purchase_return",
+      transactionId: transaction.id,
       partyId: transaction.partyId,
       date: new Date().toISOString(),
       items: returnItems,

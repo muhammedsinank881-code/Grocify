@@ -11,7 +11,7 @@ import Purchase from './pages/Purchase'
 import Payments from './pages/Payments'
 import Reports from './pages/Reports'
 import Offers from './pages/Offers'
-import Task from './pages/Task'
+
 
 const App = () => {
   return (
