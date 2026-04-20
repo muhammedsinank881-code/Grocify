@@ -133,17 +133,11 @@ export const StoreProvider = ({ children }) => {
 
   const clearCart = () => setCart([]);
 
-  // ✅ NEW: handleQtyInput (replaces increaseQty and decreaseQty)
   const handleQtyInput = (id, value) => {
-    // allow only numbers + dot
     if (!/^[0-9.]*$/.test(value)) return;
-
-    // prevent multiple dots
     if ((value.match(/\./g) || []).length > 1) return;
 
     let v = value;
-
-    // ".300" → "0.300"
     if (v.startsWith(".")) {
       v = "0" + v;
     }
@@ -151,7 +145,6 @@ export const StoreProvider = ({ children }) => {
     const num = parseFloat(v);
     const product = products.find(p => p.id === id);
     
-    // Check if quantity exceeds stock
     if (!isNaN(num) && num > product.stock) return;
 
     setCart(prev =>
@@ -159,7 +152,7 @@ export const StoreProvider = ({ children }) => {
         item.id === id
           ? {
               ...item,
-              quantityInput: value, // raw UI value
+              quantityInput: value,
               quantity: isNaN(num) ? 0 : +num.toFixed(3)
             }
           : item
@@ -239,7 +232,6 @@ export const StoreProvider = ({ children }) => {
       total
     };
 
-    // Save transaction
     const res = await fetch(`${BASE_URL}/transactions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -249,7 +241,6 @@ export const StoreProvider = ({ children }) => {
     const saved = await res.json();
     setTransactions(prev => [...prev, saved]);
 
-    // 📦 Increase stock and update cost price
     for (let item of items) {
       const product = products.find(p => p.id === item.id);
 
@@ -258,11 +249,10 @@ export const StoreProvider = ({ children }) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           stock: product.stock + item.quantity,
-          costPrice: item.costPrice // update cost
+          costPrice: item.costPrice
         })
       });
 
-      // Update local state
       setProducts(prev =>
         prev.map(p =>
           p.id === item.id
@@ -276,7 +266,6 @@ export const StoreProvider = ({ children }) => {
       );
     }
 
-    // 💸 Update supplier balance (you owe them, so balance decreases)
     const supplier = parties.find(p => p.id === partyId);
     const newBalance = supplier.balance - total;
 
@@ -286,13 +275,97 @@ export const StoreProvider = ({ children }) => {
       body: JSON.stringify({ balance: newBalance })
     });
 
-    // Update local state
     setParties(prev =>
       prev.map(p =>
         p.id === partyId ? { ...p, balance: newBalance } : p
       )
     );
 
+    await fetchData();
+  };
+
+  // ✅ FIXED: Separate createPurchaseReturn function (moved outside)
+  const createPurchaseReturn = async (transaction, returnItems) => {
+    let refundAmount = 0;
+
+    returnItems.forEach(item => {
+      refundAmount += item.costPrice * item.quantity;
+    });
+
+    const newReturn = {
+      type: "purchase_return",
+      transactionId: transaction.id,
+      partyId: transaction.partyId,
+      date: new Date().toISOString(),
+      items: returnItems,
+      refundAmount
+    };
+
+    // Save in returns table
+    await fetch(`${BASE_URL}/returns`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(newReturn)
+    });
+
+    // 📦 DECREASE stock for purchase returns (items going back to supplier)
+    for (let item of returnItems) {
+      const product = products.find(p => p.id === item.id);
+      const newStock = product.stock - item.quantity;
+
+      await fetch(`${BASE_URL}/products/${item.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stock: newStock
+        })
+      });
+
+      setProducts(prev =>
+        prev.map(p =>
+          p.id === item.id ? { ...p, stock: newStock } : p
+        )
+      );
+    }
+
+    // 💰 Adjust supplier balance (we get money back, so balance decreases)
+    const supplier = parties.find(p => p.id === transaction.partyId);
+    
+    if (supplier) {
+      const newBalance = supplier.balance + refundAmount; // Adding because we're returning goods
+
+      await fetch(`${BASE_URL}/parties/${supplier.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ balance: newBalance })
+      });
+
+      setParties(prev =>
+        prev.map(p =>
+          p.id === supplier.id ? { ...p, balance: newBalance } : p
+        )
+      );
+    }
+
+    // Add transaction log for purchase return (negative total)
+    const returnTransaction = {
+      type: "purchase_return",
+      partyId: transaction.partyId,
+      date: new Date().toISOString(),
+      items: returnItems,
+      total: -refundAmount
+    };
+
+    await fetch(`${BASE_URL}/transactions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(returnTransaction)
+    });
+
+    // Update local returns state
+    setReturns(prev => [...prev, newReturn]);
+    
+    // Refresh all data
     await fetchData();
   };
 
@@ -303,20 +376,19 @@ export const StoreProvider = ({ children }) => {
       return;
     }
 
-    // ✅ NEW: Calculate total with discounts
     const total = cart.reduce((sum, item) => {
       const price = getDiscountedPrice(item);
       return sum + price * item.quantity;
     }, 0);
 
-    // ✅ NEW: Map cart items with discounted prices
     const discountedItems = cart.map(item => {
       const price = getDiscountedPrice(item);
       return {
         id: item.id,
         name: item.name,
-        price, // ✅ discounted price
-        quantity: item.quantity
+        price,
+        quantity: item.quantity,
+        costPrice: item.costPrice // Include cost price for profit calculation
       };
     });
 
@@ -325,11 +397,10 @@ export const StoreProvider = ({ children }) => {
       partyId: partyId || null,
       date: new Date().toISOString(),
       paymentMethod,
-      items: discountedItems, // ✅ Using discounted items
+      items: discountedItems,
       total
     };
 
-    // Save transaction
     const res = await fetch(`${BASE_URL}/transactions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -339,7 +410,7 @@ export const StoreProvider = ({ children }) => {
     const saved = await res.json();
     setTransactions(prev => [...prev, saved]);
 
-    // 💰 CREDIT SYSTEM - Update party balance if credit payment
+    // Update party balance for credit payments
     if (paymentMethod === "credit" && partyId) {
       const party = parties.find(p => p.id === partyId);
       const newBalance = party.balance + total;
@@ -350,7 +421,6 @@ export const StoreProvider = ({ children }) => {
         body: JSON.stringify({ balance: newBalance })
       });
 
-      // Update local state
       setParties(prev =>
         prev.map(p =>
           p.id === partyId ? { ...p, balance: newBalance } : p
@@ -358,7 +428,7 @@ export const StoreProvider = ({ children }) => {
       );
     }
 
-    // 📦 UPDATE STOCK for all items in cart (using original product stock)
+    // Update stock
     for (let item of cart) {
       const product = products.find(p => p.id === item.id);
       const newStock = product.stock - item.quantity;
@@ -369,7 +439,6 @@ export const StoreProvider = ({ children }) => {
         body: JSON.stringify({ stock: newStock })
       });
 
-      // Update local state
       setProducts(prev =>
         prev.map(p =>
           p.id === item.id ? { ...p, stock: newStock } : p
@@ -377,65 +446,37 @@ export const StoreProvider = ({ children }) => {
       );
     }
 
-    // Refresh all data to ensure consistency
     await fetchData();
-
-    // Clear cart after successful billing
     clearCart();
-
     return saved;
   };
 
-  const createPayment = async (partyId, amount, method) => {
-    const party = parties.find(p => p.id === partyId);
-
-    let newBalance = party.balance;
-
-    if (party.type === "customer") {
-      // customer pays → reduce balance
-      newBalance = party.balance - amount;
-    } else {
-      // you pay supplier → increase balance towards zero
-      newBalance = party.balance + amount;
-    }
-
-    const newPayment = {
-      partyId,
-      amount,
-      method,
-      date: new Date().toISOString()
-    };
-
-    // save payment
-    await fetch(`${BASE_URL}/payments`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(newPayment)
-    });
-
-    // update balance
-    await fetch(`${BASE_URL}/parties/${partyId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ balance: newBalance })
-    });
-
-    fetchData();
-  };
-
-  // ---------------- RETURNS ----------------
+  // ✅ FIXED: Enhanced createReturn with profit calculation
   const createReturn = async (transaction, returnItems) => {
-    // Calculate refund amount
+    // Calculate refund amount using selling price
     let refundAmount = 0;
+    let profitLoss = 0;
+
     returnItems.forEach(item => {
       refundAmount += item.price * item.quantity;
+      
+      // Calculate profit/loss impact
+      // For each returned item, we lose the profit that was made
+      const originalItem = transaction.items.find(i => i.id === item.id);
+      if (originalItem && originalItem.costPrice) {
+        const profitPerItem = originalItem.price - originalItem.costPrice;
+        profitLoss += profitPerItem * item.quantity;
+      }
     });
 
     const newReturn = {
+      type: "sale_return",
       transactionId: transaction.id,
+      partyId: transaction.partyId,
       date: new Date().toISOString(),
       items: returnItems,
-      refundAmount
+      refundAmount,
+      profitLoss: -profitLoss // Negative profit impact
     };
 
     // Save return
@@ -466,7 +507,7 @@ export const StoreProvider = ({ children }) => {
       );
     }
 
-    // Restore stock
+    // ✅ INCREASE stock for sales returns (items coming back)
     for (let item of returnItems) {
       const product = products.find(p => p.id === item.id);
       const newStock = product.stock + item.quantity;
@@ -484,12 +525,13 @@ export const StoreProvider = ({ children }) => {
       );
     }
 
-    // Create a credit note transaction for the return
-    const creditNote = {
-      type: "return",
+    // Create a return transaction (negative total)
+    const returnTransaction = {
+      type: "sale_return",
       transactionId: transaction.id,
+      partyId: transaction.partyId || null,
       date: new Date().toISOString(),
-      paymentMethod: "credit_note",
+      paymentMethod: "return",
       items: returnItems,
       total: -refundAmount
     };
@@ -497,10 +539,46 @@ export const StoreProvider = ({ children }) => {
     await fetch(`${BASE_URL}/transactions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(creditNote)
+      body: JSON.stringify(returnTransaction)
     });
 
+    // Refresh all data to ensure consistency
     await fetchData();
+    
+    return savedReturn;
+  };
+
+  const createPayment = async (partyId, amount, method) => {
+    const party = parties.find(p => p.id === partyId);
+
+    let newBalance = party.balance;
+
+    if (party.type === "customer") {
+      newBalance = party.balance - amount;
+    } else {
+      newBalance = party.balance + amount;
+    }
+
+    const newPayment = {
+      partyId,
+      amount,
+      method,
+      date: new Date().toISOString()
+    };
+
+    await fetch(`${BASE_URL}/payments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(newPayment)
+    });
+
+    await fetch(`${BASE_URL}/parties/${partyId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ balance: newBalance })
+    });
+
+    fetchData();
   };
 
   // ---------------- UTILITIES ----------------
@@ -561,6 +639,7 @@ export const StoreProvider = ({ children }) => {
         createBill,
         createPurchase,
         createReturn,
+        createPurchaseReturn, // ✅ Now exported properly
         createPayment,
 
         // Utility functions
